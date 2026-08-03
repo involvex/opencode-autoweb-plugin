@@ -1,57 +1,117 @@
-import { Plugin } from '@opencode-ai/plugin'
-let isSpawning = false
+import type { Plugin } from '@opencode-ai/plugin'
+import {
+	resolveConfig,
+	parseEnvConfig,
+	getServerConfigFromOpenCodeConfig,
+	buildWebFlags,
+	type WebPluginOptions,
+} from './config.js'
 
-function isWebProcessRunning(): boolean {
+let hasInitialized = false
+
+async function isWebProcessRunning(port: number): Promise<boolean> {
 	try {
 		if (process.platform === 'win32') {
 			const res = Bun.spawnSync(['cmd', '/c', 'tasklist /FI "IMAGENAME eq opencode.exe"'])
-			// Match only the web server process, not the main OpenCode process.
-			// The web server spawns as: opencode.exe web --port 5000
 			return res.stdout.toString().includes('opencode web')
 		}
-		const res = Bun.spawnSync(['pgrep', '-f', 'opencode web'])
+		const res = Bun.spawnSync(['pgrep', '-f', `opencode web --port ${port}`])
 		return res.exitCode === 0
 	} catch {
 		return false
 	}
 }
 
-export const OpencodeAutowebPluginPlugin: Plugin = async ({ client }) => {
-	// Set the guard flag SYNCHRONOUSLY — before any await — so that
-	// concurrent invocations of this plugin are blocked immediately.
-	// This prevents the race condition where two calls both pass the
-	// guard before either one sets the flag, resulting in a double spawn.
-	if (isSpawning) return {}
-	isSpawning = true
+export const OpencodeAutowebPluginPlugin: Plugin = async (
+	{ client },
+	options?: Record<string, unknown>,
+) => {
+	if (hasInitialized) return {}
+	hasInitialized = true
+
+	await client.app.log({
+		body: { service: 'opencode-autoweb-plugin', level: 'info', message: 'plugin initializing' },
+	})
+
+	const envConfig = parseEnvConfig()
+	const pluginOpts = options as WebPluginOptions | undefined
+
+	let openCodeConfig: Record<string, unknown> | undefined
+	try {
+		const result = await client.config.get()
+		const raw = (result as { data?: Record<string, unknown> } | undefined)?.data
+		if (raw) {
+			openCodeConfig = raw
+		}
+	} catch {
+		// proceed without OpenCode server config
+	}
+
+	const serverConfig = getServerConfigFromOpenCodeConfig(openCodeConfig)
+	const resolvedConfig = resolveConfig(pluginOpts, envConfig, serverConfig)
 
 	await client.app.log({
 		body: {
 			service: 'opencode-autoweb-plugin',
-			level: 'info',
-			message: 'plugin initialized',
+			level: 'debug',
+			message: `resolved config: ${JSON.stringify({
+				port: resolvedConfig.port,
+				hostname: resolvedConfig.hostname,
+				mdns: resolvedConfig.mdns,
+				mdnsDomain: resolvedConfig.mdnsDomain,
+				cors: resolvedConfig.cors,
+				autoStart: resolvedConfig.autoStart,
+				logLevel: resolvedConfig.logLevel,
+			})}`,
 		},
 	})
 
-	try {
-		// 1. Check OS process list — is the web server already running?
-		if (isWebProcessRunning()) {
-			return {}
+	if (resolvedConfig.autoStart) {
+		try {
+			const alreadyRunning = await isRunning(resolvedConfig)
+			if (!alreadyRunning) {
+				const flags = buildWebFlags(resolvedConfig)
+				Bun.spawn(['opencode', 'web', ...flags], {
+					stdout: 'ignore',
+					stderr: 'ignore',
+					detached: true,
+				})
+				await client.app.log({
+					body: {
+						service: 'opencode-autoweb-plugin',
+						level: 'info',
+						message: `spawned opencode web on ${resolvedConfig.hostname}:${resolvedConfig.port}`,
+					},
+				})
+			} else {
+				await client.app.log({
+					body: {
+						service: 'opencode-autoweb-plugin',
+						level: 'info',
+						message: `web server already running on ${resolvedConfig.hostname}:${resolvedConfig.port}`,
+					},
+				})
+			}
+		} catch {
+			// silent fail
 		}
-
-		// 2. Port-check as fallback — is something listening on port 5000?
-		const res = await fetch('http://127.0.0.1:5000').catch(() => null)
-		if (res) return {}
-
-		// 3. Spawn the web server
-		Bun.spawn(['opencode', 'web', '--port', '5000'], {
-			stdout: 'ignore',
-			stderr: 'ignore',
-			detached: true,
+	} else {
+		await client.app.log({
+			body: {
+				service: 'opencode-autoweb-plugin',
+				level: 'info',
+				message: 'autoStart disabled; skipping spawn',
+			},
 		})
-	} catch {
-		// Silent fail
 	}
-	return {}
+
+	return {} as Awaited<ReturnType<Plugin>>
+}
+
+async function isRunning(config: { port: number; hostname: string }): Promise<boolean> {
+	if (await isWebProcessRunning(config.port)) return true
+	const res = await fetch(`http://${config.hostname}:${config.port}`).catch(() => null)
+	return res !== null
 }
 
 export default OpencodeAutowebPluginPlugin

@@ -23,12 +23,13 @@ function readConfig(): Record<string, unknown> {
 }
 
 function ensureDependencies(): void {
-	if (!existsSync(join(dirname(import.meta.path), 'node_modules'))) {
+	const projectDir = dirname(import.meta.path)
+	if (!existsSync(join(projectDir, 'node_modules'))) {
 		const sInstall = p.spinner()
 		sInstall.start('node_modules not found — running bun install...')
 		try {
 			execSync('bun install', {
-				cwd: dirname(import.meta.path),
+				cwd: projectDir,
 				stdio: 'ignore',
 			})
 			sInstall.stop('Dependencies installed.')
@@ -39,14 +40,20 @@ function ensureDependencies(): void {
 	}
 }
 
-p.intro('OpenCode Plugin Setup')
+p.intro('OpenCode Autoweb Plugin Setup')
 
 ensureDependencies()
 
 const config = readConfig()
-const plugins: string[] = Array.isArray(config.plugin) ? (config.plugin as string[]) : []
+const plugins: (string | [string, Record<string, unknown>])[] = Array.isArray(config.plugin)
+	? (config.plugin as (string | [string, Record<string, unknown>])[])
+	: []
 
-if (plugins.includes(PLUGIN_URL)) {
+const alreadyRegistered = plugins.some((entry) =>
+	typeof entry === 'string' ? entry === PLUGIN_URL : entry[0] === PLUGIN_URL,
+)
+
+if (alreadyRegistered) {
 	p.note(PLUGIN_URL, 'Already registered')
 	p.outro('Plugin is already in your global OpenCode config. Nothing to do.')
 	process.exit(0)
@@ -61,8 +68,35 @@ p.note(
 	'Will register',
 )
 
+const port = (await p.text({
+	message: 'Port for the web server',
+	placeholder: '5000',
+	defaultValue: '5000',
+	validate: (value) => {
+		const n = parseInt(value ?? '', 10)
+		if (isNaN(n) || n < 1 || n > 65535) return 'Must be a number between 1–65535'
+		return undefined
+	},
+})) as string | symbol
+
+if (p.isCancel(port)) {
+	p.cancel('Setup cancelled.')
+	process.exit(0)
+}
+
+const hostname = (await p.text({
+	message: 'Hostname to bind',
+	placeholder: '127.0.0.1',
+	defaultValue: '127.0.0.1',
+})) as string | symbol
+
+if (p.isCancel(hostname)) {
+	p.cancel('Setup cancelled.')
+	process.exit(0)
+}
+
 const confirmed = await p.confirm({
-	message: `Add this plugin to ${CONFIG_FILE}?`,
+	message: `Register with port=${String(port)} hostname=${String(hostname)}?`,
 	initialValue: true,
 })
 
@@ -78,15 +112,35 @@ if (!existsSync(CONFIG_DIR)) {
 	mkdirSync(CONFIG_DIR, { recursive: true })
 }
 
-config.plugin = [...plugins, PLUGIN_URL]
+const opts: Record<string, unknown> = {}
+const portNum = parseInt(port as string, 10)
+if (portNum !== 5000) {
+	opts.port = portNum
+}
+if (hostname !== '127.0.0.1') {
+	opts.hostname = hostname
+}
+
+let pluginEntry: string | [string, Record<string, unknown>]
+if (Object.keys(opts).length > 0) {
+	pluginEntry = [PLUGIN_URL, opts]
+} else {
+	pluginEntry = PLUGIN_URL
+}
+
+config.plugin = [
+	...plugins.filter((e) => !(typeof e === 'string' ? e === PLUGIN_URL : e[0] === PLUGIN_URL)),
+	pluginEntry,
+]
 writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n', 'utf-8')
 
 sWrite.stop('Config updated.')
 
 p.note(
 	[
-		`✓ Registered: ${PLUGIN_URL}`,
-		`✓ Config    : ${CONFIG_FILE}`,
+		`Registered: ${PLUGIN_URL}`,
+		Object.keys(opts).length > 0 ? `Options: ${JSON.stringify(opts)}` : 'Options: defaults',
+		`Config    : ${CONFIG_FILE}`,
 		'',
 		'Restart OpenCode for the change to take effect.',
 		'To remove this plugin run: bun run unregister',
