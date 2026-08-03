@@ -1,5 +1,5 @@
 {
-	"name": "opencode-autoweb-plugin",
+	"name": "@involvex/opencode-autoweb-plugin",
 	"version": "0.1.0",
 	"description": "An awesome OpenCode plugin",
 	"keywords": [
