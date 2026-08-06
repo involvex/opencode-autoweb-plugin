@@ -7,20 +7,76 @@ import {
 	type WebPluginOptions,
 } from './config.js'
 
+const INIT_TIMEOUT_MS = 10_000
 let hasInitialized = false
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Fire-and-forget log via the SDK client — never blocks init. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function safeLog(client: any, body: Record<string, unknown>): void {
+	client.app.log({ body }).catch(() => {})
+}
+
+/**
+ * Check whether an `opencode web` process is already running.
+ * Uses async spawn + timeout to avoid blocking the event loop.
+ */
 async function isWebProcessRunning(port: number): Promise<boolean> {
 	try {
 		if (process.platform === 'win32') {
-			const res = Bun.spawnSync(['cmd', '/c', 'tasklist /FI "IMAGENAME eq opencode.exe"'])
-			return res.stdout.toString().includes('opencode web')
+			const proc = Bun.spawn(['cmd', '/c', 'tasklist /FI "IMAGENAME eq opencode.exe"'], {
+				stdout: 'pipe',
+				stderr: 'pipe',
+			})
+			const result = await Promise.race([
+				(async (): Promise<boolean> => {
+					const out = await new Response(proc.stdout).text()
+					await proc.exited
+					return out.includes('opencode web')
+				})(),
+				new Promise<boolean>((resolve) =>
+					setTimeout(() => {
+						proc.kill()
+						resolve(false)
+					}, 5000),
+				),
+			])
+			return result ?? false
 		}
-		const res = Bun.spawnSync(['pgrep', '-f', `opencode web --port ${port}`])
-		return res.exitCode === 0
+
+		const proc = Bun.spawn(['pgrep', '-f', `opencode web --port ${port}`], {
+			stdout: 'pipe',
+			stderr: 'pipe',
+		})
+		const result = await Promise.race([
+			proc.exited.then(() => proc.exitCode === 0),
+			new Promise<boolean>((resolve) =>
+				setTimeout(() => {
+					proc.kill()
+					resolve(false)
+				}, 5000),
+			),
+		])
+		return result ?? false
 	} catch {
 		return false
 	}
 }
+
+async function isRunning(config: { port: number; hostname: string }): Promise<boolean> {
+	if (await isWebProcessRunning(config.port)) return true
+	const res = await fetch(`http://${config.hostname}:${config.port}`, {
+		signal: AbortSignal.timeout(5000),
+	}).catch(() => null)
+	return res !== null
+}
+
+// ---------------------------------------------------------------------------
+// Plugin entry point
+// ---------------------------------------------------------------------------
 
 export const OpencodeAutowebPluginPlugin: Plugin = async (
 	{ client },
@@ -29,29 +85,33 @@ export const OpencodeAutowebPluginPlugin: Plugin = async (
 	if (hasInitialized) return {}
 	hasInitialized = true
 
-	await client.app.log({
-		body: { service: 'opencode-autoweb-plugin', level: 'info', message: 'plugin initializing' },
-	})
+	const initPromise = (async (): Promise<void> => {
+		safeLog(client, {
+			service: 'opencode-autoweb-plugin',
+			level: 'info',
+			message: 'plugin initializing',
+		})
 
-	const envConfig = parseEnvConfig()
-	const pluginOpts = options as WebPluginOptions | undefined
+		const envConfig = parseEnvConfig()
+		const pluginOpts = options as WebPluginOptions | undefined
 
-	let openCodeConfig: Record<string, unknown> | undefined
-	try {
-		const result = await client.config.get()
-		const raw = (result as { data?: Record<string, unknown> } | undefined)?.data
-		if (raw) {
-			openCodeConfig = raw
+		// Fetch OpenCode config with a timeout so a slow IPC doesn't hang boot.
+		let openCodeConfig: Record<string, unknown> | undefined
+		try {
+			const result = await Promise.race([
+				client.config.get(),
+				new Promise<undefined>((resolve) => setTimeout(resolve, 5000, undefined)),
+			])
+			const raw = (result as { data?: Record<string, unknown> } | undefined)?.data
+			if (raw) openCodeConfig = raw
+		} catch {
+			// proceed without OpenCode server config
 		}
-	} catch {
-		// proceed without OpenCode server config
-	}
 
-	const serverConfig = getServerConfigFromOpenCodeConfig(openCodeConfig)
-	const resolvedConfig = resolveConfig(pluginOpts, envConfig, serverConfig)
+		const serverConfig = getServerConfigFromOpenCodeConfig(openCodeConfig)
+		const resolvedConfig = resolveConfig(pluginOpts, envConfig, serverConfig)
 
-	await client.app.log({
-		body: {
+		safeLog(client, {
 			service: 'opencode-autoweb-plugin',
 			level: 'debug',
 			message: `resolved config: ${JSON.stringify({
@@ -63,55 +123,50 @@ export const OpencodeAutowebPluginPlugin: Plugin = async (
 				autoStart: resolvedConfig.autoStart,
 				logLevel: resolvedConfig.logLevel,
 			})}`,
-		},
-	})
+		})
 
-	if (resolvedConfig.autoStart) {
-		try {
-			const alreadyRunning = await isRunning(resolvedConfig)
-			if (!alreadyRunning) {
-				const flags = buildWebFlags(resolvedConfig)
-				Bun.spawn(['opencode', 'web', ...flags], {
-					stdout: 'ignore',
-					stderr: 'ignore',
-					detached: true,
-				})
-				await client.app.log({
-					body: {
+		if (resolvedConfig.autoStart) {
+			try {
+				const alreadyRunning = await isRunning(resolvedConfig)
+				if (!alreadyRunning) {
+					const flags = buildWebFlags(resolvedConfig)
+					Bun.spawn(['opencode', 'web', ...flags], {
+						stdout: 'ignore',
+						stderr: 'ignore',
+						detached: true,
+					})
+					safeLog(client, {
 						service: 'opencode-autoweb-plugin',
 						level: 'info',
 						message: `spawned opencode web on ${resolvedConfig.hostname}:${resolvedConfig.port}`,
-					},
-				})
-			} else {
-				await client.app.log({
-					body: {
+					})
+				} else {
+					safeLog(client, {
 						service: 'opencode-autoweb-plugin',
 						level: 'info',
 						message: `web server already running on ${resolvedConfig.hostname}:${resolvedConfig.port}`,
-					},
-				})
+					})
+				}
+			} catch {
+				// silent fail
 			}
-		} catch {
-			// silent fail
-		}
-	} else {
-		await client.app.log({
-			body: {
+		} else {
+			safeLog(client, {
 				service: 'opencode-autoweb-plugin',
 				level: 'info',
 				message: 'autoStart disabled; skipping spawn',
-			},
-		})
-	}
+			})
+		}
+	})()
+
+	// Bail out after INIT_TIMEOUT_MS — the plugin is non-critical, OpenCode
+	// can boot without it.
+	await Promise.race([
+		initPromise,
+		new Promise<void>((resolve) => setTimeout(resolve, INIT_TIMEOUT_MS)),
+	])
 
 	return {} as Awaited<ReturnType<Plugin>>
-}
-
-async function isRunning(config: { port: number; hostname: string }): Promise<boolean> {
-	if (await isWebProcessRunning(config.port)) return true
-	const res = await fetch(`http://${config.hostname}:${config.port}`).catch(() => null)
-	return res !== null
 }
 
 export default OpencodeAutowebPluginPlugin
