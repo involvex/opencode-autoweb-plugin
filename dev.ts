@@ -1,4 +1,3 @@
-import type { Config } from '@opencode-ai/sdk'
 import { spawn } from 'bun'
 import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -11,7 +10,9 @@ console.log('')
 const pluginPath = pathToFileURL(scriptDir).href
 console.log(`Plugin path: ${pluginPath}`)
 
-const config = { plugin: [pluginPath] } satisfies Config
+// V2 config shape: `plugins` entries are strings or { package, options }.
+// (@opencode/sdk v2 no longer exports a Config type, so this is structural.)
+const config = { plugins: [pluginPath] }
 
 const OPENCODE_CONFIG_CONTENT = JSON.stringify(config)
 

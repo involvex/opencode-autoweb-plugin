@@ -1,6 +1,17 @@
 # Suggestions for `opencode-autoweb-plugin`
 
-This document outlines features that can be implemented to extend the plugin beyond its current minimal scope (auto-spawning `opencode web --port 5000`). Each suggestion includes a rationale and implementation notes.
+> V2 note (v0.2.0 port): this doc was written against the V1 plugin API. When
+> implementing items below, use the V2 equivalents — `ctx.tool.transform(...)`
+> instead of the `tool` helper/`tool` return block, `ctx.session.hook(...)` /
+> `ctx.tool.hook(...)` / `ctx.shell.hook(...)` / `ctx.permission.hook(...)`
+> instead of `chat.*`/`tool.execute.*`/`shell.env`/`permission.ask` string keys,
+> `ctx.command.transform(...)` instead of `command.execute.before`,
+> `ctx.event.subscribe()` instead of the `event` return hook, a cleanup function
+> returned from `setup` instead of `dispose`, and `Plugin.define` from
+> `@opencode/plugin` (not `@opencode-ai/plugin`). The spawned command is
+> `opencode serve`, not `opencode serve`.
+
+This document outlines features that can be implemented to extend the plugin beyond its current minimal scope (auto-spawning `opencode serve --port 5000`). Each suggestion includes a rationale and implementation notes.
 
 ---
 
@@ -18,7 +29,7 @@ This document outlines features that can be implemented to extend the plugin bey
 
 **Rationale:** Once the web server is running, users should be able to query its status directly from OpenCode chat — a custom tool is the idiomatic way to expose this.
 
-**Implementation:** Register a custom `tool` (using the `tool` helper from `@opencode-ai/plugin`) that checks whether the process is alive and the port is responding, then returns a human-readable summary.
+**Implementation:** Register a custom `tool` (using `ctx.tool.transform` from `@opencode/plugin`) that checks whether the process is alive and the port is responding, then returns a human-readable summary.
 
 **Example return:** `"OpenCode web server is running on http://127.0.0.1:5000 (PID 1234)"` or an error if not reachable.
 
@@ -30,7 +41,7 @@ This document outlines features that can be implemented to extend the plugin bey
 
 **Rationale:** There is no way to restart the web server without leaving OpenCode and running shell commands manually. A `/web.restart`-style tool (or slash command) would streamline troubleshooting.
 
-**Implementation:** A custom `tool` that kills any existing `opencode web` process and spawns a fresh one, reusing the port-detection logic from the main plugin. Could call into a shared `startWebServer()` helper.
+**Implementation:** A custom `tool` that kills any existing `opencode serve` process and spawns a fresh one, reusing the port-detection logic from the main plugin. Could call into a shared `startWebServer()` helper.
 
 **Hook/Area:** `tool` return block; share logic via a helper function.
 
@@ -48,9 +59,9 @@ This document outlines features that can be implemented to extend the plugin bey
 
 ## 5. Auto-Cleanup on Plugin Dispose
 
-**Rationale:** Currently, the `opencode web` process is spawned with `detached: true` and is never explicitly killed when the plugin (or OpenCode) shuts down. This can leave orphan processes.
+**Rationale:** Currently, the `opencode serve` process is spawned with `detached: true` and is never explicitly killed when the plugin (or OpenCode) shuts down. This can leave orphan processes.
 
-**Implementation:** Use the `dispose` hook to terminate any `opencode web` process that this plugin spawned. Track the spawned `Subprocess` object (instead of firing-and-forgetting) and kill it in `dispose`.
+**Implementation:** Use the `dispose` hook to terminate any `opencode serve` process that this plugin spawned. Track the spawned `Subprocess` object (instead of firing-and-forgetting) and kill it in `dispose`.
 
 **Hook/Area:** `dispose`
 
@@ -159,7 +170,7 @@ Keep it best-effort (silent fail if the command isn't available).
 
 ## 14. `tool.execute.after` — Capture Web Server Logs to File
 
-**Rationale:** For debugging, capture stdout/stderr of the spawned `opencode web` process to a log file (e.g., `~/.config/opencode/web-server.log`) so users can inspect web-server errors without re-running manually.
+**Rationale:** For debugging, capture stdout/stderr of the spawned `opencode serve` process to a log file (e.g., `~/.config/opencode/web-server.log`) so users can inspect web-server errors without re-running manually.
 
 **Implementation:** When spawning, pipe `stdout`/`stderr` to a file in append mode instead of `'ignore'`. Rotate the log on each start or cap at a max size.
 

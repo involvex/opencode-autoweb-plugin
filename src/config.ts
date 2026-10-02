@@ -3,8 +3,6 @@ type LogLevel = 'debug' | 'info' | 'warn' | 'error'
 export interface WebPluginOptions {
 	port?: number
 	hostname?: string
-	mdns?: boolean
-	mdnsDomain?: string
 	cors?: string[]
 	autoStart?: boolean
 	logLevel?: LogLevel
@@ -13,8 +11,6 @@ export interface WebPluginOptions {
 export interface ResolvedWebConfig {
 	port: number
 	hostname: string
-	mdns: boolean
-	mdnsDomain: string | undefined
 	cors: string[] | undefined
 	autoStart: boolean
 	logLevel: LogLevel
@@ -23,24 +19,10 @@ export interface ResolvedWebConfig {
 export const DEFAULT_CONFIG: ResolvedWebConfig = {
 	port: 5000,
 	hostname: '127.0.0.1',
-	mdns: false,
-	mdnsDomain: undefined,
 	cors: undefined,
 	autoStart: true,
 	logLevel: 'info',
 }
-
-type OpenCodeServerConfig = {
-	port?: number
-	hostname?: string
-	mdns?: boolean
-	mdnsDomain?: string
-	cors?: string[]
-}
-
-type OpenCodeConfig = {
-	server?: OpenCodeServerConfig
-} & Record<string, unknown>
 
 function parseBoolean(value: string | undefined): boolean | undefined {
 	if (value === undefined) return undefined
@@ -65,15 +47,6 @@ export function parseEnvConfig(): Partial<WebPluginOptions> {
 		config.hostname = env.OPENCODE_WEB_HOSTNAME
 	}
 
-	const envMdns = parseBoolean(env.OPENCODE_WEB_MDNS)
-	if (envMdns !== undefined) {
-		config.mdns = envMdns
-	}
-
-	if (env.OPENCODE_WEB_MDNS_DOMAIN) {
-		config.mdnsDomain = env.OPENCODE_WEB_MDNS_DOMAIN
-	}
-
 	if (env.OPENCODE_WEB_CORS) {
 		config.cors = env.OPENCODE_WEB_CORS.split(',')
 			.map((s) => s.trim())
@@ -95,57 +68,37 @@ export function parseEnvConfig(): Partial<WebPluginOptions> {
 	return config
 }
 
-export function getServerConfigFromOpenCodeConfig(
-	config: OpenCodeConfig | undefined,
-): Partial<WebPluginOptions> {
-	if (!config?.server) return {}
-	const s = config.server
-	return {
-		...(s.port !== undefined ? { port: s.port } : {}),
-		...(s.hostname ? { hostname: s.hostname } : {}),
-		...(s.mdns !== undefined ? { mdns: s.mdns } : {}),
-		...(s.mdnsDomain ? { mdnsDomain: s.mdnsDomain } : {}),
-		...(s.cors ? { cors: s.cors } : {}),
-	}
-}
-
+/**
+ * Resolve the effective config.
+ *
+ * Precedence: plugin options > OPENCODE_WEB_* env > defaults.
+ *
+ * V2 note: the V1 `server.*` block from opencode.json is intentionally NOT
+ * read. V2 treats `server` as an unsupported legacy field (it is ignored with
+ * a warning), and `opencode serve` takes its own --hostname/--port/--cors
+ * flags instead. Likewise the V1 mdns/mdnsDomain options are gone: `opencode
+ * serve` (v2.0.20) exposes only --hostname, --port, --cors (+ --service,
+ * --stdio), so there is no mDNS flag to forward.
+ */
 export function resolveConfig(
 	pluginOptions?: WebPluginOptions,
 	envConfig?: Partial<WebPluginOptions>,
-	serverConfig?: Partial<WebPluginOptions>,
 ): ResolvedWebConfig {
 	return {
-		port: pluginOptions?.port ?? envConfig?.port ?? serverConfig?.port ?? DEFAULT_CONFIG.port,
-		hostname:
-			pluginOptions?.hostname ??
-			envConfig?.hostname ??
-			serverConfig?.hostname ??
-			DEFAULT_CONFIG.hostname,
-		mdns: pluginOptions?.mdns ?? envConfig?.mdns ?? serverConfig?.mdns ?? DEFAULT_CONFIG.mdns,
-		mdnsDomain:
-			pluginOptions?.mdnsDomain ??
-			envConfig?.mdnsDomain ??
-			serverConfig?.mdnsDomain ??
-			DEFAULT_CONFIG.mdnsDomain,
-		cors: pluginOptions?.cors ?? envConfig?.cors ?? serverConfig?.cors ?? DEFAULT_CONFIG.cors,
+		port: pluginOptions?.port ?? envConfig?.port ?? DEFAULT_CONFIG.port,
+		hostname: pluginOptions?.hostname ?? envConfig?.hostname ?? DEFAULT_CONFIG.hostname,
+		cors: pluginOptions?.cors ?? envConfig?.cors ?? DEFAULT_CONFIG.cors,
 		autoStart: pluginOptions?.autoStart ?? envConfig?.autoStart ?? DEFAULT_CONFIG.autoStart,
 		logLevel: pluginOptions?.logLevel ?? envConfig?.logLevel ?? DEFAULT_CONFIG.logLevel,
 	}
 }
 
-export function buildWebFlags(config: ResolvedWebConfig): string[] {
+/** Build argv for `opencode serve --hostname <h> --port <p> [--cors ...]`. */
+export function buildServeFlags(config: ResolvedWebConfig): string[] {
 	const flags: string[] = []
 
-	flags.push('--port', String(config.port))
 	flags.push('--hostname', config.hostname)
-
-	if (config.mdns) {
-		flags.push('--mdns')
-	}
-
-	if (config.mdnsDomain) {
-		flags.push('--mdns-domain', config.mdnsDomain)
-	}
+	flags.push('--port', String(config.port))
 
 	if (config.cors && config.cors.length > 0) {
 		for (const origin of config.cors) {

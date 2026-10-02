@@ -25,9 +25,23 @@ function readConfig(): Record<string, unknown> {
 p.intro('OpenCode Plugin Unregister')
 
 const config = readConfig()
-const plugins: string[] = Array.isArray(config.plugin) ? (config.plugin as string[]) : []
+// V2 config shape: `plugins` entries are strings or { package, options } objects.
+// Also tolerate legacy V1 entries (string or [package, options] tuple) on read.
+type PluginEntry =
+	| string
+	| [string, Record<string, unknown>]
+	| { package: string; options?: Record<string, unknown> }
+const plugins: PluginEntry[] = Array.isArray(config.plugins ?? config.plugin)
+	? ((config.plugins ?? config.plugin) as PluginEntry[])
+	: []
 
-if (!plugins.includes(PLUGIN_URL)) {
+function entryMatches(entry: PluginEntry): boolean {
+	if (typeof entry === 'string') return entry === PLUGIN_URL
+	if (Array.isArray(entry)) return entry[0] === PLUGIN_URL
+	return entry.package === PLUGIN_URL
+}
+
+if (!plugins.some(entryMatches)) {
 	p.note(PLUGIN_URL, 'Not registered')
 	p.outro('Plugin is not in your global OpenCode config. Nothing to remove.')
 	process.exit(0)
@@ -48,7 +62,9 @@ if (p.isCancel(confirmed) || !confirmed) {
 const sWrite = p.spinner()
 sWrite.start('Updating config...')
 
-config.plugin = plugins.filter((entry) => entry !== PLUGIN_URL)
+config.plugins = plugins.filter((entry) => !entryMatches(entry))
+// Drop an empty legacy V1 `plugin` key if we migrated off it.
+if (Array.isArray(config.plugin)) delete config.plugin
 writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n', 'utf-8')
 
 sWrite.stop('Config updated.')

@@ -12,13 +12,13 @@ const PLUGIN_URL = pathToFileURL(PLUGIN_ENTRY_PATH).href
 
 function readConfig(): Record<string, unknown> {
 	if (!existsSync(CONFIG_FILE)) {
-		return { $schema: 'https://opencode.ai/config.json', plugin: [] }
+		return { $schema: 'https://opencode.ai/config.json', plugins: [] }
 	}
 	try {
 		return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8')) as Record<string, unknown>
 	} catch {
 		p.log.warn(`Could not parse existing ${CONFIG_FILE} — starting with a fresh config.`)
-		return { $schema: 'https://opencode.ai/config.json', plugin: [] }
+		return { $schema: 'https://opencode.ai/config.json', plugins: [] }
 	}
 }
 
@@ -45,13 +45,17 @@ p.intro('OpenCode Autoweb Plugin Setup')
 ensureDependencies()
 
 const config = readConfig()
-const plugins: (string | [string, Record<string, unknown>])[] = Array.isArray(config.plugin)
-	? (config.plugin as (string | [string, Record<string, unknown>])[])
+// V2 config shape: `plugins` entries are strings or { package, options } objects.
+type PluginEntry = string | { package: string; options?: Record<string, unknown> }
+const plugins: PluginEntry[] = Array.isArray(config.plugins)
+	? (config.plugins as PluginEntry[])
 	: []
 
-const alreadyRegistered = plugins.some((entry) =>
-	typeof entry === 'string' ? entry === PLUGIN_URL : entry[0] === PLUGIN_URL,
-)
+function entryMatches(entry: PluginEntry): boolean {
+	return typeof entry === 'string' ? entry === PLUGIN_URL : entry.package === PLUGIN_URL
+}
+
+const alreadyRegistered = plugins.some(entryMatches)
 
 if (alreadyRegistered) {
 	p.note(PLUGIN_URL, 'Already registered')
@@ -121,17 +125,14 @@ if (hostname !== '127.0.0.1') {
 	opts.hostname = hostname
 }
 
-let pluginEntry: string | [string, Record<string, unknown>]
+let pluginEntry: PluginEntry
 if (Object.keys(opts).length > 0) {
-	pluginEntry = [PLUGIN_URL, opts]
+	pluginEntry = { package: PLUGIN_URL, options: opts }
 } else {
 	pluginEntry = PLUGIN_URL
 }
 
-config.plugin = [
-	...plugins.filter((e) => !(typeof e === 'string' ? e === PLUGIN_URL : e[0] === PLUGIN_URL)),
-	pluginEntry,
-]
+config.plugins = [...plugins.filter((e) => !entryMatches(e)), pluginEntry]
 writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n', 'utf-8')
 
 sWrite.stop('Config updated.')
